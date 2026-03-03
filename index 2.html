@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>読書記録</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f0f4fa; font-family: '游ゴシック', 'Yu Gothic', 'YuGothic', 'Hiragino Sans', sans-serif; }
+  input, select, textarea, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #dde8f5; }
+  ::-webkit-scrollbar-thumb { background: #4a7fc1; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const YU = "'游ゴシック','Yu Gothic','YuGothic',sans-serif";
+
+const SAMPLE_BOOKS = [
+  { id: 1, title: "騎士団長殺し", author: "村上春樹", status: "読了", rating: 4, date: "2025-12-10", pages: 704, genre: "文学", memo: "深い象徴と謎めいた世界観が印象的だった。", cover: "" },
+  { id: 2, title: "ノルウェイの森", author: "村上春樹", status: "読了", rating: 5, date: "2026-01-15", pages: 296, genre: "文学", memo: "何度読んでも新しい発見がある。", cover: "" },
+  { id: 3, title: "火花", author: "又吉直樹", status: "読了", rating: 4, date: "2026-02-03", pages: 167, genre: "文学", memo: "芸人の世界とは。言葉の選び方が独特。", cover: "" },
+  { id: 4, title: "コンビニ人間", author: "村田沙耶香", status: "読んでいる", rating: null, date: null, pages: 163, genre: "文学", memo: "", cover: "" },
+  { id: 5, title: "1Q84", author: "村上春樹", status: "積読", rating: null, date: null, pages: 1184, genre: "文学", memo: "", cover: "" },
+  { id: 6, title: "パン屋を再び襲う", author: "村上春樹", status: "読了", rating: 3, date: "2026-01-28", pages: 184, genre: "短編", memo: "短編集。気軽に読める。", cover: "" },
+];
+
+const STATUS_COLORS = {
+  "読了": { bg: "#dbeafe", text: "#1d4ed8" },
+  "読んでいる": { bg: "#e0f2fe", text: "#0369a1" },
+  "積読": { bg: "#ede9fe", text: "#6d28d9" },
+};
+const STATUSES = ["すべて", "読了", "読んでいる", "積読"];
+
+async function fetchCover(title, author) {
+  if (!title.trim()) return "";
+  // Clean title: remove brackets/symbols for better search hits
+  const cleanTitle = title.replace(/[「」『』【】《》〔〕()（）]/g, " ").replace(/\s+/g, " ").trim();
+  const queries = [];
+  if (author) {
+    queries.push("intitle:" + cleanTitle + "+inauthor:" + author);
+    queries.push(cleanTitle + " " + author);
+  }
+  queries.push("intitle:" + cleanTitle);
+  queries.push(cleanTitle);
+  for (const q of queries) {
+    try {
+      const res = await fetch("https://www.googleapis.com/books/v1/volumes?q=" + encodeURIComponent(q) + "&maxResults=5");
+      const data = await res.json();
+      for (const item of (data.items || [])) {
+        const img = item.volumeInfo && item.volumeInfo.imageLinks;
+        if (img) {
+          const url = (img.thumbnail || img.smallThumbnail || "").replace("http://", "https://");
+          if (url) return url;
+        }
+      }
+    } catch(e) {}
+  }
+  return "";
+}
+
+function BookCover({ src, size }) {
+  const w = size === "large" ? 90 : 52;
+  const h = size === "large" ? 120 : 70;
+  if (src) {
+    return React.createElement("img", {
+      src: src, alt: "表紙",
+      style: { width: w, height: h, objectFit: "cover", borderRadius: 4, flexShrink: 0, boxShadow: "2px 4px 10px rgba(0,0,0,0.2)" },
+      onError: function(e) { e.target.style.display = "none"; }
+    });
+  }
+  return React.createElement("div", {
+    style: {
+      width: w, height: h,
+      background: "linear-gradient(135deg, #bdd4f0 0%, #93b8e8 100%)",
+      borderRadius: 4, flexShrink: 0, display: "flex", alignItems: "center",
+      justifyContent: "center", fontSize: size === "large" ? 36 : 22,
+      boxShadow: "2px 2px 8px rgba(0,0,0,0.15)"
+    }
+  }, "📖");
+}
+
+function StarRating({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 2 }}>
+      {[1,2,3,4,5].map(s => (
+        <span key={s} onClick={() => onChange && onChange(s)} style={{
+          fontSize: 20, cursor: onChange ? "pointer" : "default",
+          color: s <= (value || 0) ? "#f59e0b" : "#d1d5db", lineHeight: 1
+        }}>★</span>
+      ))}
+    </div>
+  );
+}
+
+function BookForm({ book, onChange, onSubmit, submitLabel }) {
+  const [fetching, setFetching] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (!book.title || !book.title.trim()) return;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async function() {
+      setFetching(true);
+      const cover = await fetchCover(book.title, book.author);
+      onChange(Object.assign({}, book, { cover: cover }));
+      setFetching(false);
+    }, 900);
+    return function() { clearTimeout(debounceRef.current); };
+  }, [book.title, book.author]);
+
+  const inputStyle = { width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #bdd4f0", background: "#fff", fontSize: 14, outline: "none" };
+  const labelStyle = { fontSize: 12, color: "#4a6a9a", display: "block", marginBottom: 4 };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Cover preview box */}
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", background: "#fff", borderRadius: 12, padding: 16, border: "1.5px solid #bdd4f0" }}>
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <BookCover src={book.cover} size="large" />
+          {fetching && (
+            <div style={{ position: "absolute", inset: 0, background: "rgba(255,255,255,0.75)", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 4, fontSize: 11, color: "#2563eb", fontWeight: 700 }}>
+              取得中…
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1, fontSize: 13, color: "#4a6a9a", lineHeight: 1.9 }}>
+          <div style={{ fontWeight: 700, color: "#0f2d5e", marginBottom: 4 }}>📸 表紙プレビュー</div>
+          タイトルを入力すると<br />Google Booksから<br />自動で取得します
+          {book.cover && !fetching && (
+            <div style={{ marginTop: 8, color: "#16a34a", fontSize: 12, fontWeight: 700 }}>✓ 取得済み</div>
+          )}
+          {!book.cover && !fetching && book.title && (
+            <div style={{ marginTop: 8, color: "#9a8ab8", fontSize: 12 }}>見つかりませんでした</div>
+          )}
+        </div>
+      </div>
+
+      {/* Title */}
+      <div>
+        <label style={labelStyle}>タイトル *</label>
+        <div style={{ position: "relative" }}>
+          <input
+            type="text" value={book.title || ""}
+            onChange={e => onChange(Object.assign({}, book, { title: e.target.value }))}
+            placeholder="例：ノルウェイの森"
+            style={inputStyle}
+          />
+          {fetching && (
+            <span style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14 }}>🔍</span>
+          )}
+        </div>
+      </div>
+
+      {/* Author */}
+      <div>
+        <label style={labelStyle}>著者</label>
+        <input type="text" value={book.author || ""} onChange={e => onChange(Object.assign({}, book, { author: e.target.value }))} placeholder="例：村上春樹" style={inputStyle} />
+      </div>
+
+      {/* Pages + Date */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={labelStyle}>ページ数</label>
+          <input type="number" value={book.pages || ""} onChange={e => onChange(Object.assign({}, book, { pages: e.target.value }))} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>読了日</label>
+          <input type="date" value={book.date || ""} onChange={e => onChange(Object.assign({}, book, { date: e.target.value }))} style={inputStyle} />
+        </div>
+      </div>
+
+      {/* Status + Genre */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={labelStyle}>ステータス</label>
+          <select value={book.status} onChange={e => onChange(Object.assign({}, book, { status: e.target.value }))} style={Object.assign({}, inputStyle, { cursor: "pointer" })}>
+            {["積読", "読んでいる", "読了"].map(s => <option key={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>ジャンル</label>
+          <select value={book.genre} onChange={e => onChange(Object.assign({}, book, { genre: e.target.value }))} style={Object.assign({}, inputStyle, { cursor: "pointer" })}>
+            {["文学", "短編", "ビジネス", "歴史", "SF", "その他"].map(g => <option key={g}>{g}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Rating */}
+      <div>
+        <label style={labelStyle}>評価</label>
+        <StarRating value={book.rating} onChange={v => onChange(Object.assign({}, book, { rating: v }))} />
+      </div>
+
+      {/* Memo */}
+      <div>
+        <label style={labelStyle}>メモ</label>
+        <textarea value={book.memo || ""} onChange={e => onChange(Object.assign({}, book, { memo: e.target.value }))} rows={3}
+          style={Object.assign({}, inputStyle, { resize: "none" })} />
+      </div>
+
+      <button onClick={onSubmit} style={{
+        background: "#2563eb", color: "#fff", border: "none", borderRadius: 12,
+        padding: "14px", fontSize: 15, fontWeight: 700, cursor: "pointer", marginTop: 4, fontFamily: YU
+      }}>{submitLabel}</button>
+    </div>
+  );
+}
+
+function EditForm({ book, onSave, onCancel }) {
+  const [edited, setEdited] = useState(Object.assign({}, book));
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#0f2d5e", fontFamily: YU }}>編集</h2>
+        <button onClick={onCancel} style={{ background: "#dde8f5", border: "none", borderRadius: 99, width: 36, height: 36, cursor: "pointer" }}>✕</button>
+      </div>
+      <BookForm book={edited} onChange={setEdited} onSubmit={() => onSave(edited)} submitLabel="保存する" />
+    </>
+  );
+}
+
+function App() {
+  const [books, setBooks] = useState(function() {
+    try {
+      const saved = localStorage.getItem("reading_log_v3");
+      return saved ? JSON.parse(saved) : SAMPLE_BOOKS;
+    } catch(e) { return SAMPLE_BOOKS; }
+  });
+  const [filter, setFilter] = useState({ status: "すべて", search: "" });
+  const [selected, setSelected] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newBook, setNewBook] = useState({ title: "", author: "", status: "積読", rating: null, date: "", pages: "", genre: "文学", memo: "", cover: "" });
+  const [activeTab, setActiveTab] = useState("list");
+  const [appTitle, setAppTitle] = useState(function() {
+    return localStorage.getItem("reading_log_title") || "読書記録";
+  });
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
+
+  useEffect(function() {
+    localStorage.setItem("reading_log_v3", JSON.stringify(books));
+  }, [books]);
+
+  useEffect(function() {
+    localStorage.setItem("reading_log_title", appTitle);
+    document.title = appTitle;
+  }, [appTitle]);
+
+  // Auto-fetch covers for books without one
+  useEffect(function() {
+    books.filter(b => !b.cover).forEach(async function(b) {
+      const cover = await fetchCover(b.title, b.author);
+      if (cover) {
+        setBooks(function(prev) { return prev.map(function(x) { return x.id === b.id ? Object.assign({}, x, { cover: cover }) : x; }); });
+      }
+    });
+  }, []);
+
+  const filtered = books.filter(function(b) {
+    if (filter.status !== "すべて" && b.status !== filter.status) return false;
+    if (filter.search && !b.title.includes(filter.search) && !b.author.includes(filter.search)) return false;
+    return true;
+  });
+
+  const stats = {
+    total: books.length,
+    done: books.filter(b => b.status === "読了").length,
+    reading: books.filter(b => b.status === "読んでいる").length,
+    pending: books.filter(b => b.status === "積読").length,
+    pages: books.filter(b => b.status === "読了").reduce((s, b) => s + (Number(b.pages) || 0), 0),
+  };
+
+  const addBook = function() {
+    if (!newBook.title.trim()) return;
+    setBooks(function(prev) { return [...prev, Object.assign({}, newBook, { id: Date.now(), pages: Number(newBook.pages) || 0 })]; });
+    setNewBook({ title: "", author: "", status: "積読", rating: null, date: "", pages: "", genre: "文学", memo: "", cover: "" });
+    setShowAdd(false);
+  };
+
+  const deleteBook = function(id) {
+    setBooks(function(prev) { return prev.filter(b => b.id !== id); });
+    setSelected(null);
+  };
+
+  const updateBook = function(updated) {
+    setBooks(function(prev) { return prev.map(b => b.id === updated.id ? updated : b); });
+    setSelected(updated);
+    setEditMode(false);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f0f4fa" }}>
+      {/* Header */}
+      <div style={{ background: "#0f2d5e", padding: "0 24px", position: "sticky", top: 0, zIndex: 100, boxShadow: "0 2px 16px rgba(0,0,0,0.35)" }}>
+        <div style={{ maxWidth: 800, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 60 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 22 }}>📚</span>
+            {editingTitle ? (
+              <form onSubmit={e => { e.preventDefault(); if(titleInput.trim()) setAppTitle(titleInput.trim()); setEditingTitle(false); }} style={{ display: "flex", gap: 6 }}>
+                <input
+                  autoFocus
+                  value={titleInput}
+                  onChange={e => setTitleInput(e.target.value)}
+                  onBlur={() => { if(titleInput.trim()) setAppTitle(titleInput.trim()); setEditingTitle(false); }}
+                  style={{ background: "rgba(255,255,255,0.15)", border: "1.5px solid #60a5fa", borderRadius: 8, color: "#e8f0fe", fontSize: 16, fontWeight: 700, padding: "4px 10px", outline: "none", width: 180, fontFamily: YU }}
+                />
+              </form>
+            ) : (
+              <span
+                onClick={() => { setTitleInput(appTitle); setEditingTitle(true); }}
+                title="タップして編集"
+                style={{ color: "#e8f0fe", fontSize: 18, fontWeight: 700, fontFamily: YU, letterSpacing: "0.05em", cursor: "pointer", borderBottom: "1px dashed rgba(255,255,255,0.35)", paddingBottom: 1 }}
+              >{appTitle} ✏️</span>
+            )}
+          </div>
+          <button onClick={() => setShowAdd(true)} style={{
+            background: "#60a5fa", color: "#0f2d5e", border: "none", borderRadius: 99,
+            padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: YU
+          }}>＋ 追加</button>
+        </div>
+        <div style={{ maxWidth: 800, margin: "0 auto", display: "flex" }}>
+          {[["list", "本棚"], ["stats", "統計"]].map(([t, l]) => (
+            <button key={t} onClick={() => setActiveTab(t)} style={{
+              background: "none", border: "none", color: activeTab === t ? "#60a5fa" : "#8a9ab8",
+              fontSize: 13, padding: "10px 16px", cursor: "pointer", fontWeight: activeTab === t ? 700 : 400,
+              borderBottom: activeTab === t ? "2px solid #60a5fa" : "2px solid transparent", fontFamily: YU
+            }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 800, margin: "0 auto", padding: "24px 16px" }}>
+        {activeTab === "list" && (
+          <>
+            <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+              <input value={filter.search} onChange={e => setFilter({...filter, search: e.target.value})}
+                placeholder="タイトル・著者で検索..." style={{
+                  flex: 1, minWidth: 160, padding: "10px 16px", borderRadius: 99,
+                  border: "1.5px solid #bdd4f0", background: "#fff", fontSize: 14, outline: "none", color: "#0f2d5e"
+                }} />
+              <select value={filter.status} onChange={e => setFilter({...filter, status: e.target.value})} style={{
+                padding: "10px 16px", borderRadius: 99, border: "1.5px solid #bdd4f0",
+                background: "#fff", fontSize: 13, cursor: "pointer", color: "#1e3a6e"
+              }}>
+                {STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <p style={{ color: "#6a8ab8", fontSize: 13, marginBottom: 16 }}>{filtered.length}冊</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {filtered.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "60px 0", color: "#8a9ab8" }}>本が見つかりません</div>
+              ) : filtered.map(function(book) {
+                const sc = STATUS_COLORS[book.status];
+                return (
+                  <div key={book.id} onClick={() => { setSelected(book); setEditMode(false); }} style={{
+                    background: "#fff", borderRadius: 16, padding: "16px 18px", cursor: "pointer",
+                    boxShadow: "0 2px 12px rgba(15,45,94,0.08)", border: "1.5px solid #dde8f5",
+                    transition: "transform 0.18s, box-shadow 0.18s", display: "flex", gap: 14, alignItems: "flex-start"
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(15,45,94,0.14)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.boxShadow = "0 2px 12px rgba(15,45,94,0.08)"; }}>
+                    <BookCover src={book.cover} size="card" />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f2d5e", lineHeight: 1.4, fontFamily: YU }}>{book.title}</h3>
+                        <span style={{ padding: "3px 10px", borderRadius: 99, background: sc.bg, color: sc.text, fontSize: 11, fontWeight: 600, flexShrink: 0 }}>{book.status}</span>
+                      </div>
+                      <p style={{ margin: "4px 0 8px", fontSize: 13, color: "#4a6a9a" }}>{book.author}</p>
+                      {book.rating && <StarRating value={book.rating} />}
+                      {book.date && <p style={{ margin: "6px 0 0", fontSize: 12, color: "#7a9ac8" }}>読了: {book.date}</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {activeTab === "stats" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[
+                { label: "総冊数", value: stats.total, icon: "📚", color: "#2563eb" },
+                { label: "読了", value: stats.done, icon: "✅", color: "#1d4ed8" },
+                { label: "読書中", value: stats.reading, icon: "📖", color: "#0369a1" },
+                { label: "積読", value: stats.pending, icon: "🗂️", color: "#6d28d9" },
+              ].map(s => (
+                <div key={s.label} style={{ background: "#fff", borderRadius: 16, padding: "20px", border: "1.5px solid #dde8f5", textAlign: "center" }}>
+                  <div style={{ fontSize: 28 }}>{s.icon}</div>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: s.color, margin: "6px 0 2px", fontFamily: YU }}>{s.value}</div>
+                  <div style={{ fontSize: 13, color: "#6a8ab8" }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: "#fff", borderRadius: 16, padding: "24px", border: "1.5px solid #dde8f5" }}>
+              <p style={{ marginBottom: 4, color: "#6a8ab8", fontSize: 13 }}>読了ページ数合計</p>
+              <p style={{ margin: 0, fontSize: 36, fontWeight: 800, color: "#0f2d5e", fontFamily: YU }}>
+                {stats.pages.toLocaleString()}<span style={{ fontSize: 16, color: "#6a8ab8", fontWeight: 400 }}>ページ</span>
+              </p>
+            </div>
+            {stats.total > 0 && (
+              <div style={{ background: "#fff", borderRadius: 16, padding: "24px", border: "1.5px solid #dde8f5" }}>
+                <p style={{ marginBottom: 12, fontSize: 14, fontWeight: 700, color: "#0f2d5e" }}>読書状況</p>
+                <div style={{ display: "flex", height: 20, borderRadius: 99, overflow: "hidden", gap: 2 }}>
+                  {[{v: stats.done, c: "#2563eb"}, {v: stats.reading, c: "#0ea5e9"}, {v: stats.pending, c: "#7c3aed"}]
+                    .filter(s => s.v > 0)
+                    .map((s, i) => <div key={i} style={{ flex: s.v, background: s.c }} />)}
+                </div>
+                <div style={{ display: "flex", gap: 16, marginTop: 10 }}>
+                  {[["#2563eb","読了",stats.done],["#0ea5e9","読書中",stats.reading],["#7c3aed","積読",stats.pending]].map(([c,l,v]) => (
+                    <div key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#4a6a9a" }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 2, background: c }} />{l} ({v})
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Detail Modal */}
+      {selected && !editMode && (
+        <div onClick={() => setSelected(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#f0f4fa", borderRadius: "24px 24px 0 0", padding: 28, width: "100%", maxWidth: 800, maxHeight: "85vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", gap: 18, marginBottom: 20, alignItems: "flex-start" }}>
+              <BookCover src={selected.cover} size="large" />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                  <div>
+                    <h2 style={{ marginBottom: 4, fontSize: 20, fontWeight: 700, color: "#0f2d5e", fontFamily: YU, lineHeight: 1.4 }}>{selected.title}</h2>
+                    <p style={{ margin: "0 0 10px", color: "#4a6a9a", fontSize: 14 }}>{selected.author}</p>
+                  </div>
+                  <button onClick={() => setSelected(null)} style={{ background: "#dde8f5", border: "none", borderRadius: 99, width: 36, height: 36, cursor: "pointer", fontSize: 16, flexShrink: 0 }}>✕</button>
+                </div>
+                {selected.rating && <StarRating value={selected.rating} />}
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+              {[["ステータス", selected.status], ["ジャンル", selected.genre], ["ページ数", (selected.pages || "—") + (selected.pages ? "p" : "")], ["読了日", selected.date || "—"]].map(([l,v]) => (
+                <div key={l} style={{ background: "#fff", borderRadius: 12, padding: "12px 16px", border: "1px solid #dde8f5" }}>
+                  <p style={{ marginBottom: 2, fontSize: 11, color: "#7a9ac8" }}>{l}</p>
+                  <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#0f2d5e" }}>{v}</p>
+                </div>
+              ))}
+            </div>
+            {selected.memo && (
+              <div style={{ background: "#fff", borderRadius: 12, padding: "16px", border: "1px solid #dde8f5", marginBottom: 16 }}>
+                <p style={{ marginBottom: 6, fontSize: 11, color: "#7a9ac8" }}>メモ</p>
+                <p style={{ margin: 0, lineHeight: 1.8, color: "#1a3060" }}>{selected.memo}</p>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setEditMode(true)} style={{ flex: 1, background: "#2563eb", color: "#fff", border: "none", borderRadius: 12, padding: "12px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: YU }}>編集</button>
+              <button onClick={() => deleteBook(selected.id)} style={{ background: "#fee2e2", color: "#dc2626", border: "none", borderRadius: 12, padding: "12px 20px", fontSize: 14, cursor: "pointer" }}>削除</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {selected && editMode && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div style={{ background: "#f0f4fa", borderRadius: "24px 24px 0 0", padding: 28, width: "100%", maxWidth: 800, maxHeight: "92vh", overflowY: "auto" }}>
+            <EditForm book={selected} onSave={updateBook} onCancel={() => setEditMode(false)} />
+          </div>
+        </div>
+      )}
+
+      {/* Add Modal */}
+      {showAdd && (
+        <div onClick={() => setShowAdd(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#f0f4fa", borderRadius: "24px 24px 0 0", padding: 28, width: "100%", maxWidth: 800, maxHeight: "92vh", overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#0f2d5e", fontFamily: YU }}>本を追加</h2>
+              <button onClick={() => setShowAdd(false)} style={{ background: "#dde8f5", border: "none", borderRadius: 99, width: 36, height: 36, cursor: "pointer" }}>✕</button>
+            </div>
+            <BookForm book={newBook} onChange={setNewBook} onSubmit={addBook} submitLabel="追加する" />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
